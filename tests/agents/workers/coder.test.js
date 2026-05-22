@@ -445,6 +445,51 @@ describe('CoderAgent.commitAndPush', () => {
 
     await expect(agent.commitAndPush(mockSandbox)).rejects.toThrow('Push failed');
   });
+
+  test('writes a .gitignore before git add when none exists (Node stack)', async () => {
+    mockSandbox.exec
+      .mockResolvedValueOnce({ stdout: 'M app.js', stderr: '', exitCode: 0 }) // status
+      .mockResolvedValueOnce({ stdout: '', stderr: '', exitCode: 0 })           // add
+      .mockResolvedValueOnce({ stdout: '', stderr: '', exitCode: 0 })           // commit
+      .mockResolvedValueOnce({ stdout: '', stderr: '', exitCode: 0 });          // push
+    mockSandbox.readFile.mockRejectedValue(new Error('ENOENT'));
+    mockSandbox.listDir.mockResolvedValue(['package.json', 'app.js']);
+
+    await agent.commitAndPush(mockSandbox);
+
+    expect(mockSandbox.writeFile).toHaveBeenCalledWith('.gitignore', expect.stringContaining('node_modules/'));
+  });
+
+  test('writes a Python .gitignore excluding __pycache__ and .coverage', async () => {
+    mockSandbox.exec
+      .mockResolvedValueOnce({ stdout: 'M app.py', stderr: '', exitCode: 0 })
+      .mockResolvedValueOnce({ stdout: '', stderr: '', exitCode: 0 })
+      .mockResolvedValueOnce({ stdout: '', stderr: '', exitCode: 0 })
+      .mockResolvedValueOnce({ stdout: '', stderr: '', exitCode: 0 });
+    mockSandbox.readFile.mockRejectedValue(new Error('ENOENT'));
+    mockSandbox.listDir.mockResolvedValue(['requirements.txt', 'app.py']);
+
+    await agent.commitAndPush(mockSandbox);
+
+    const [, content] = mockSandbox.writeFile.mock.calls.find(c => c[0] === '.gitignore');
+    expect(content).toContain('__pycache__/');
+    expect(content).toContain('.coverage');
+    expect(content).not.toContain('node_modules/');
+  });
+
+  test('does not write .gitignore when one already exists', async () => {
+    mockSandbox.exec
+      .mockResolvedValueOnce({ stdout: 'M app.js', stderr: '', exitCode: 0 })
+      .mockResolvedValueOnce({ stdout: '', stderr: '', exitCode: 0 })
+      .mockResolvedValueOnce({ stdout: '', stderr: '', exitCode: 0 })
+      .mockResolvedValueOnce({ stdout: '', stderr: '', exitCode: 0 });
+    mockSandbox.readFile.mockResolvedValue('node_modules/\n');
+
+    await agent.commitAndPush(mockSandbox);
+
+    const gitignoreWrite = mockSandbox.writeFile.mock.calls.find(c => c[0] === '.gitignore');
+    expect(gitignoreWrite).toBeUndefined();
+  });
 });
 
 // ── openPR ────────────────────────────────────────────────────────────────────

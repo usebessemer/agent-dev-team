@@ -252,6 +252,18 @@ assistant:`;
       throw new Error('No files were written — nothing to commit');
     }
 
+    let hasGitignore = false;
+    try {
+      await workspace.readFile('.gitignore');
+      hasGitignore = true;
+    } catch {
+      hasGitignore = false;
+    }
+    if (!hasGitignore) {
+      const stack = await this._detectStack(workspace);
+      await workspace.writeFile('.gitignore', this._gitignoreContent(stack));
+    }
+
     await workspace.exec('git add -A');
     const commit = await workspace.exec(
       `git -c user.name="Coder Agent" -c user.email="coder@adt.local" commit -m "[coder-${this.issue.number}] ${this.issue.title}"`
@@ -262,6 +274,28 @@ assistant:`;
     if (push.exitCode !== 0) throw new Error(`Push failed: ${push.stderr}`);
 
     await this.log(`🚢 Branch pushed: ${this.branchName}`);
+  }
+
+  async _detectStack(workspace) {
+    try {
+      const files = await workspace.listDir('.');
+      if (files.includes('package.json')) return 'node';
+      if (files.some(f => ['requirements.txt', 'setup.py', 'pyproject.toml'].includes(f))) return 'python';
+      if (files.includes('go.mod')) return 'go';
+    } catch {
+      // if listing fails, fall through to combined default
+    }
+    return null;
+  }
+
+  _gitignoreContent(stack) {
+    const node = 'node_modules/\ndist/\n*.log\n';
+    const python = '__pycache__/\n*.pyc\n*.pyo\n.coverage\n.pytest_cache/\n*.egg-info/\nbuild/\ndist/\n';
+    const go = '*.exe\n*.test\nbuild/\n';
+    if (stack === 'node') return node;
+    if (stack === 'python') return python;
+    if (stack === 'go') return go;
+    return `${node}${python}${go}`;
   }
 
   async openPR() {
