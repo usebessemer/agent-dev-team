@@ -95,9 +95,9 @@ describe('CoderAgent constructor', () => {
     expect(agent.branchName).toBe('coder/42/build-a-calculator-app');
   });
 
-  test('defaults maxIterations to 10', () => {
+  test('defaults maxIterations to 25', () => {
     const agent = new CoderAgent(makeIssue(), null, makeProjectRepo());
-    expect(agent.maxIterations).toBe(10);
+    expect(agent.maxIterations).toBe(25);
   });
 
   test('reads maxIterations from CODER_MAX_ITERATIONS env var', () => {
