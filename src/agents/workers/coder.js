@@ -261,7 +261,7 @@ assistant:`;
       await workspace.readFile('.gitignore');
       hasGitignore = true;
     } catch {
-      hasGitignore = false;
+      // .gitignore absent — hasGitignore stays false
     }
     if (!hasGitignore) {
       const stack = await this._detectStack(workspace);
