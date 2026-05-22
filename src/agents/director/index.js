@@ -363,7 +363,7 @@ class Director {
       if (!Array.isArray(d.acceptanceCriteria) || d.acceptanceCriteria.length === 0) {
         errors.push(`deliverable "${d.name || '(unnamed)'}" must have at least one acceptanceCriteria`);
       }
-      if (/test|qa/i.test(d.name || '')) {
+      if (/(^|[-\s])(tests?|testing|qa)([-\s]|$)/i.test(d.name || '')) {
         errors.push(`deliverable "${d.name}" looks like a standalone test/QA deliverable — fold tests into the code deliverable's acceptanceCriteria instead`);
       }
     }

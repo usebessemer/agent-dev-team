@@ -493,12 +493,14 @@ describe('Director._validateSpec', () => {
     }
   });
 
-  test('does not flag a code deliverable whose name incidentally contains unrelated text', () => {
-    const spec = {
-      ...VALID_SPEC,
-      deliverables: [{ name: 'web-calculator-app', type: 'code', description: 'App', acceptanceCriteria: ['loads'] }]
-    };
-    expect(director._validateSpec(spec)).toEqual([]);
+  test('does not flag deliverables whose names contain "test"/"qa" only as a substring', () => {
+    for (const safeName of ['attestation-service', 'contest-platform', 'latest-news-feed']) {
+      const spec = {
+        ...VALID_SPEC,
+        deliverables: [{ name: safeName, type: 'code', description: 'App', acceptanceCriteria: ['loads'] }]
+      };
+      expect(director._validateSpec(spec)).toEqual([]);
+    }
   });
 });
 
