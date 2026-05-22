@@ -303,6 +303,30 @@ describe('CoderAgent.agenticLoop', () => {
     expect(global.fetch).toHaveBeenCalledTimes(1);
   });
 
+  test('returns "completed" when done() is called', async () => {
+    global.fetch = jest.fn().mockResolvedValue({
+      json: jest.fn().mockResolvedValue({
+        response: '{"tool":"done","args":{"summary":"built it"}}',
+      }),
+    });
+
+    const result = await agent.agenticLoop(mockSandbox);
+    expect(result).toBe('completed');
+  });
+
+  test('returns "incomplete" when maxIterations exhausted', async () => {
+    agent.maxIterations = 2;
+    global.fetch = jest.fn().mockResolvedValue({
+      json: jest.fn().mockResolvedValue({
+        response: '{"tool":"exec","args":{"command":"echo hi"}}',
+      }),
+    });
+    mockSandbox.exec.mockResolvedValue({ stdout: 'hi', stderr: '', exitCode: 0 });
+
+    const result = await agent.agenticLoop(mockSandbox);
+    expect(result).toBe('incomplete');
+  });
+
   test('executes tool and feeds result back before next model call', async () => {
     global.fetch = jest.fn()
       .mockResolvedValueOnce({
@@ -526,6 +550,28 @@ describe('CoderAgent.openPR', () => {
     await agent.openPR();
     expect(mockOctokit.issues.update).toHaveBeenCalledWith(
       expect.objectContaining({ labels: ['status:review'] })
+    );
+  });
+
+  test('completed PR is not a draft and contains Closes reference', async () => {
+    await agent.openPR(true);
+    expect(mockOctokit.pulls.create).toHaveBeenCalledWith(
+      expect.objectContaining({ draft: false, body: expect.stringContaining('Closes #42') })
+    );
+  });
+
+  test('incomplete PR is a draft and omits Closes reference', async () => {
+    await agent.openPR(false);
+    const call = mockOctokit.pulls.create.mock.calls[0][0];
+    expect(call.draft).toBe(true);
+    expect(call.body).not.toContain('Closes');
+    expect(call.body).toContain('unverified');
+  });
+
+  test('incomplete PR labels issue status:needs-work', async () => {
+    await agent.openPR(false);
+    expect(mockOctokit.issues.update).toHaveBeenCalledWith(
+      expect.objectContaining({ labels: ['status:needs-work'] })
     );
   });
 });
