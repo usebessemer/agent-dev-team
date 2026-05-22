@@ -103,10 +103,13 @@ class CoderAgent {
       const checkout = await workspace.exec(`git checkout -b ${this.branchName}`);
       if (checkout.exitCode !== 0) throw new Error(`Branch creation failed: ${checkout.stderr}`);
 
-      await this.agenticLoop(workspace);
+      const status = await this.agenticLoop(workspace);
       await this.commitAndPush(workspace);
-      await this.openPR();
-      await this.log(`✅ PR opened for Issue #${this.issue.number}. Discarding.`);
+      await this.openPR(status === 'completed');
+      const finalMsg = status === 'completed'
+        ? `✅ PR opened for Issue #${this.issue.number}. Discarding.`
+        : `⚠️ PR opened as draft for Issue #${this.issue.number} — max iterations reached, work unverified. Discarding.`;
+      await this.log(finalMsg);
     } catch (err) {
       await this.log(`❌ Fatal error on Issue #${this.issue.number}: ${err.message}`);
       await this.escalate(err.message);
@@ -127,7 +130,7 @@ class CoderAgent {
 
       if (response.tool === 'done') {
         await this.log(`✅ Agent done: ${response.args.summary}`);
-        return;
+        return 'completed';
       }
 
       if (response.toolUses) {
@@ -162,6 +165,7 @@ class CoderAgent {
     }
 
     await this.log(`⚠️ Max iterations reached — committing what was written`);
+    return 'incomplete';
   }
 
   async callModel(messages, useClaude) {
@@ -298,21 +302,26 @@ assistant:`;
     return `${node}${python}${go}`;
   }
 
-  async openPR() {
+  async openPR(completed = true) {
+    const body = completed
+      ? `Closes #${this.issue.number}\n\nOpened by ${this.agentName}.`
+      : `Opened by ${this.agentName}.\n\n⚠️ Max iterations reached — work is unverified. Do not merge without manual review.`;
+
     const { data: pr } = await this.octokit.pulls.create({
       owner: this.owner,
       repo: this.repo,
       title: `[coder-${this.issue.number}] ${this.issue.title}`,
       head: this.branchName,
       base: 'main',
-      body: `Closes #${this.issue.number}\n\nOpened by ${this.agentName}.`,
+      body,
+      draft: !completed,
     });
 
     await this.octokit.issues.update({
       owner: this.owner,
       repo: this.repo,
       issue_number: this.issue.number,
-      labels: ['status:review'],
+      labels: [completed ? 'status:review' : 'status:needs-work'],
     });
 
     await this.log(`🔀 PR #${pr.number} opened: ${pr.html_url}`);
