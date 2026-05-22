@@ -66,6 +66,50 @@ Every project gets its own GitHub repo and its own Discord channel (`#proj-{name
 
 ---
 
+## Walkthrough
+
+agent-dev-team turns a one-line brief into a working repository through a team of
+Director, PM, Tech Lead, and Coder agents — coordinated in Discord, with you
+approving at each gate. The screenshots below follow one example: the brief
+"a CLI tool that converts CSV files to JSON".
+
+### 1. Brief → draft spec
+Post a one-line brief in `#director`. The Director generates a draft spec — goal,
+tech stack, and deliverables.
+
+![Brief and draft spec](docs/screenshots/01-brief-and-spec.png)
+
+### 2. Refine it conversationally
+Reply with changes and the Director revises the spec in place — here, adding a
+`--columns` flag. Iterate until it's right, then `confirm`.
+
+![Spec refinement](docs/screenshots/02-spec-refinement.png)
+
+### 3. Approve the spec
+The confirmed spec moves to `#approvals` for your sign-off before any work begins.
+
+![Spec approval](docs/screenshots/03-spec-approval.png)
+
+### 4. Approve the estimate
+The PM agent produces a cost-and-hours estimate. Nothing is built until you
+approve it.
+
+![Cost estimate](docs/screenshots/04-cost-estimate.png)
+
+### 5. The team spins up
+On approval, the PM and Tech Lead come online. The Tech Lead sets the coding
+standards the Coder agents will follow.
+
+![Agents online](docs/screenshots/05-agents-online.png)
+
+### 6. Repo and issues created
+The PM creates the project repository and breaks the spec into GitHub issues —
+one per deliverable. Coder agents then pick up the issues and open pull requests.
+
+![Repo and issues](docs/screenshots/06-repo-and-issues.png)
+
+---
+
 ## What runs on your machine
 
 > **Important:** Coder and Tech Lead agents execute model-generated shell commands **directly on your host** inside a temporary directory. There is no container isolation. Do not run this system against untrusted issue content or on a machine where arbitrary code execution is unacceptable. Real sandbox isolation is planned for v1.8.
