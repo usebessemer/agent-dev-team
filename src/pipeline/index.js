@@ -248,6 +248,10 @@ class Pipeline {
 
         for (const pr of prs) {
           if (reviewedPRs.has(pr.number)) continue;
+          if (pr.draft) {
+            console.log(`[Pipeline] PR #${pr.number} is a draft — skipping, needs manual review`);
+            continue;
+          }
           reviewedPRs.add(pr.number);
           console.log(`[Pipeline] PR found for review: #${pr.number}`);
           const result = await project.techLead.reviewPR(pr.number, projectRepo);
