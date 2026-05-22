@@ -661,6 +661,36 @@ describe('Director with Claude API', () => {
     const call = mockAnthropicCreate.mock.calls[0][0];
     expect(call.system[0].cache_control).toEqual({ type: 'ephemeral' });
   });
+
+  test('_refineSpecWithClaude uses max_tokens 4096', async () => {
+    mockAnthropicCreate.mockResolvedValue({
+      content: [{ text: JSON.stringify(VALID_SPEC) }],
+    });
+
+    await director._refineSpecWithClaude({}, 'add a deliverable');
+
+    const call = mockAnthropicCreate.mock.calls[0][0];
+    expect(call.max_tokens).toBe(4096);
+  });
+
+  test('_refineSpecWithClaude parses a grown spec without truncation errors', async () => {
+    const grownSpec = {
+      ...VALID_SPEC,
+      deliverables: [
+        ...VALID_SPEC.deliverables,
+        { name: 'csv2json-validator', type: 'code', description: 'Validates output', acceptanceCriteria: ['validates schema', 'rejects malformed input'] },
+        { name: 'csv2json-docs', type: 'docs', description: 'Usage docs', acceptanceCriteria: ['covers all flags'] },
+      ]
+    };
+
+    mockAnthropicCreate.mockResolvedValue({
+      content: [{ text: JSON.stringify(grownSpec) }],
+    });
+
+    const result = await director._refineSpecWithClaude(VALID_SPEC, 'add validator and docs deliverables');
+    expect(result.deliverables).toHaveLength(3);
+    expect(result.deliverables[1].name).toBe('csv2json-validator');
+  });
 });
 
 describe('Director._refineSpecWithModel (retry behavior)', () => {

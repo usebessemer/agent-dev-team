@@ -192,7 +192,7 @@ class Director {
 
     const response = await this.anthropic.messages.create({
       model: this.model,
-      max_tokens: 1024,
+      max_tokens: 4096,
       system: [{ type: 'text', text: DIRECTOR_SYSTEM_PROMPT, cache_control: { type: 'ephemeral' } }],
       messages: [{ role: 'user', content: prompt }]
     });
@@ -213,7 +213,8 @@ class Director {
       body: JSON.stringify({
         model: this.model,
         prompt: `You are the Director. Here is the current project spec:\n${JSON.stringify(currentSpec)}\n\nThe user wants: "${instruction}"\n\nReturn ONLY the updated spec as valid JSON, preserving unchanged fields.${errorHint}`,
-        stream: false
+        stream: false,
+        options: { num_predict: 4096 }
       })
     });
     const data = await response.json();
