@@ -23,8 +23,8 @@ class PMAgent {
     this.owner = process.env.GITHUB_OWNER;
     this.repo = process.env.GITHUB_REPO;
     this.ollamaUrl = process.env.OLLAMA_BASE_URL || 'http://127.0.0.1:11434';
-    this.model = process.env.MANAGER_MODEL || 'llama3.1:8b';
     this.anthropicKey = process.env.ANTHROPIC_API_KEY;
+    this.model = process.env.MANAGER_MODEL || (this.anthropicKey ? 'claude-sonnet-4-6' : 'llama3.1:8b');
     this.projectRepo = null;
 
     this.ready = new Promise((resolve) => {

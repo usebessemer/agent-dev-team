@@ -51,6 +51,36 @@ const makeSpec = (overrides = {}) => ({
   ...overrides,
 });
 
+describe('PMAgent constructor — model defaults', () => {
+  beforeEach(() => {
+    delete process.env.ANTHROPIC_API_KEY;
+    delete process.env.MANAGER_MODEL;
+  });
+
+  afterEach(() => {
+    delete process.env.ANTHROPIC_API_KEY;
+    delete process.env.MANAGER_MODEL;
+  });
+
+  test('defaults model to claude-sonnet-4-6 when ANTHROPIC_API_KEY is set', () => {
+    process.env.ANTHROPIC_API_KEY = 'test-key';
+    const agent = new PMAgent(makeSpec(), { managers: 'ch-managers' });
+    expect(agent.model).toBe('claude-sonnet-4-6');
+  });
+
+  test('defaults model to llama3.1:8b when ANTHROPIC_API_KEY is not set', () => {
+    const agent = new PMAgent(makeSpec(), { managers: 'ch-managers' });
+    expect(agent.model).toBe('llama3.1:8b');
+  });
+
+  test('respects MANAGER_MODEL override regardless of ANTHROPIC_API_KEY', () => {
+    process.env.ANTHROPIC_API_KEY = 'test-key';
+    process.env.MANAGER_MODEL = 'claude-opus-4-7';
+    const agent = new PMAgent(makeSpec(), { managers: 'ch-managers' });
+    expect(agent.model).toBe('claude-opus-4-7');
+  });
+});
+
 describe('PMAgent.readEstimationHistory', () => {
   let agent;
 
