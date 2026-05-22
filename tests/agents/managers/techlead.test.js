@@ -272,6 +272,39 @@ describe('TechLeadAgent.getQualitativeReview', () => {
     expect(body.prompt).not.toContain('Score this PR');
     expect(body.prompt).not.toContain('1-10');
   });
+
+  test('parses Claude-shaped response (content[0].text) without throwing', async () => {
+    process.env.ANTHROPIC_API_KEY = 'test-key';
+    const claudeAgent = makeAgent();
+
+    global.fetch = jest.fn().mockResolvedValue({
+      json: jest.fn().mockResolvedValue({
+        content: [{ text: '{"commentary":"Clean code","suggestions":["add more tests"]}' }],
+      }),
+    });
+
+    const result = await claudeAgent.getQualitativeReview({ title: 'Add feature', body: 'desc' }, []);
+    expect(result.commentary).toBe('Clean code');
+    expect(result.suggestions).toEqual(['add more tests']);
+
+    delete process.env.ANTHROPIC_API_KEY;
+  });
+
+  test('sends request to Anthropic endpoint when ANTHROPIC_API_KEY is set', async () => {
+    process.env.ANTHROPIC_API_KEY = 'test-key';
+    const claudeAgent = makeAgent();
+
+    global.fetch = jest.fn().mockResolvedValue({
+      json: jest.fn().mockResolvedValue({
+        content: [{ text: '{"commentary":"ok","suggestions":[]}' }],
+      }),
+    });
+
+    await claudeAgent.getQualitativeReview({ title: 'Add feature', body: 'desc' }, []);
+    expect(global.fetch.mock.calls[0][0]).toBe('https://api.anthropic.com/v1/messages');
+
+    delete process.env.ANTHROPIC_API_KEY;
+  });
 });
 
 // ── reviewPR ─────────────────────────────────────────────────────────────────
