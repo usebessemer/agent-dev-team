@@ -258,6 +258,35 @@ describe('Pipeline.watchPRs', () => {
     expect(mockTechLead.reviewPR).toHaveBeenCalledTimes(2);
   });
 
+  test('skips a draft PR without calling reviewPR', async () => {
+    mockOctokit.pulls.list.mockResolvedValue({
+      data: [{ number: 5, draft: true }],
+    });
+
+    pipeline.watchPRs('test-project', { owner: 'o', repo: 'r' });
+    jest.advanceTimersByTime(10001);
+    await flushAsync();
+
+    expect(mockTechLead.reviewPR).not.toHaveBeenCalled();
+  });
+
+  test('re-evaluates a draft PR on the next poll after it is promoted', async () => {
+    mockOctokit.pulls.list
+      .mockResolvedValueOnce({ data: [{ number: 5, draft: true }] })
+      .mockResolvedValueOnce({ data: [{ number: 5, draft: false }] });
+
+    pipeline.watchPRs('test-project', { owner: 'o', repo: 'r' });
+    jest.advanceTimersByTime(10001);
+    await flushAsync();
+
+    expect(mockTechLead.reviewPR).not.toHaveBeenCalled();
+
+    jest.advanceTimersByTime(300001);
+    await flushAsync();
+
+    expect(mockTechLead.reviewPR).toHaveBeenCalledWith(5, expect.anything());
+  });
+
   test('does not re-review already reviewed PRs on subsequent polls', async () => {
     mockOctokit.pulls.list.mockResolvedValue({
       data: [{ number: 10 }],
