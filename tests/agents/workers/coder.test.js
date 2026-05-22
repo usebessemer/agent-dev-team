@@ -25,7 +25,7 @@ const mockSandbox = {
   writeFile: jest.fn(),
   listDir: jest.fn(),
 };
-jest.mock('../../../src/sandbox', () => jest.fn(() => mockSandbox));
+jest.mock('../../../src/workspace', () => jest.fn(() => mockSandbox));
 
 const CoderAgent = require('../../../src/agents/workers/coder');
 
@@ -95,9 +95,9 @@ describe('CoderAgent constructor', () => {
     expect(agent.branchName).toBe('coder/42/build-a-calculator-app');
   });
 
-  test('defaults maxIterations to 10', () => {
+  test('defaults maxIterations to 25', () => {
     const agent = new CoderAgent(makeIssue(), null, makeProjectRepo());
-    expect(agent.maxIterations).toBe(10);
+    expect(agent.maxIterations).toBe(25);
   });
 
   test('reads maxIterations from CODER_MAX_ITERATIONS env var', () => {
@@ -121,25 +121,25 @@ describe('CoderAgent.executeTool', () => {
     mockSandbox.exec.mockResolvedValue({ stdout: 'ok', stderr: '', exitCode: 0 });
   });
 
-  test('read_file delegates to sandbox.readFile', async () => {
+  test('read_file delegates to workspace.readFile', async () => {
     const result = await agent.executeTool('read_file', { path: 'src/app.js' }, mockSandbox);
     expect(mockSandbox.readFile).toHaveBeenCalledWith('src/app.js');
     expect(result).toBe('file content');
   });
 
-  test('write_file delegates to sandbox.writeFile and returns "written"', async () => {
+  test('write_file delegates to workspace.writeFile and returns "written"', async () => {
     const result = await agent.executeTool('write_file', { path: 'src/app.js', content: 'code' }, mockSandbox);
     expect(mockSandbox.writeFile).toHaveBeenCalledWith('src/app.js', 'code');
     expect(result).toBe('written');
   });
 
-  test('list_dir delegates to sandbox.listDir', async () => {
+  test('list_dir delegates to workspace.listDir', async () => {
     const result = await agent.executeTool('list_dir', { path: 'src' }, mockSandbox);
     expect(mockSandbox.listDir).toHaveBeenCalledWith('src');
     expect(result).toEqual(['a.js', 'b.js']);
   });
 
-  test('exec delegates to sandbox.exec', async () => {
+  test('exec delegates to workspace.exec', async () => {
     const result = await agent.executeTool('exec', { command: 'npm test' }, mockSandbox);
     expect(mockSandbox.exec).toHaveBeenCalledWith('npm test');
     expect(result).toEqual({ stdout: 'ok', stderr: '', exitCode: 0 });
@@ -205,7 +205,7 @@ describe('CoderAgent.callClaude', () => {
     delete process.env.ANTHROPIC_API_KEY;
   });
 
-  test('returns tool call when model responds with tool_use block', async () => {
+  test('returns toolUses array when model responds with a single tool_use block', async () => {
     global.fetch = jest.fn().mockResolvedValue({
       ok: true,
       json: jest.fn().mockResolvedValue({
@@ -216,9 +216,28 @@ describe('CoderAgent.callClaude', () => {
     });
 
     const result = await agent.callClaude([{ role: 'user', content: 'task' }]);
-    expect(result.tool).toBe('read_file');
-    expect(result.args).toEqual({ path: 'README.md' });
-    expect(result.id).toBe('tu_123');
+    expect(result.toolUses).toHaveLength(1);
+    expect(result.toolUses[0].name).toBe('read_file');
+    expect(result.toolUses[0].input).toEqual({ path: 'README.md' });
+    expect(result.toolUses[0].id).toBe('tu_123');
+  });
+
+  test('returns all tool_use blocks in toolUses when model returns parallel calls', async () => {
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      json: jest.fn().mockResolvedValue({
+        content: [
+          { type: 'tool_use', name: 'read_file', input: { path: 'a.js' }, id: 'tu_1' },
+          { type: 'tool_use', name: 'read_file', input: { path: 'b.js' }, id: 'tu_2' },
+        ],
+      }),
+    });
+
+    const result = await agent.callClaude([{ role: 'user', content: 'task' }]);
+    expect(result.toolUses).toHaveLength(2);
+    expect(result.toolUses[0].id).toBe('tu_1');
+    expect(result.toolUses[1].id).toBe('tu_2');
+    expect(result.raw).toBeDefined();
   });
 
   test('returns done when model responds with text only (no tool_use)', async () => {
@@ -284,6 +303,30 @@ describe('CoderAgent.agenticLoop', () => {
     expect(global.fetch).toHaveBeenCalledTimes(1);
   });
 
+  test('returns "completed" when done() is called', async () => {
+    global.fetch = jest.fn().mockResolvedValue({
+      json: jest.fn().mockResolvedValue({
+        response: '{"tool":"done","args":{"summary":"built it"}}',
+      }),
+    });
+
+    const result = await agent.agenticLoop(mockSandbox);
+    expect(result).toBe('completed');
+  });
+
+  test('returns "incomplete" when maxIterations exhausted', async () => {
+    agent.maxIterations = 2;
+    global.fetch = jest.fn().mockResolvedValue({
+      json: jest.fn().mockResolvedValue({
+        response: '{"tool":"exec","args":{"command":"echo hi"}}',
+      }),
+    });
+    mockSandbox.exec.mockResolvedValue({ stdout: 'hi', stderr: '', exitCode: 0 });
+
+    const result = await agent.agenticLoop(mockSandbox);
+    expect(result).toBe('incomplete');
+  });
+
   test('executes tool and feeds result back before next model call', async () => {
     global.fetch = jest.fn()
       .mockResolvedValueOnce({
@@ -334,6 +377,45 @@ describe('CoderAgent.agenticLoop', () => {
 
     await expect(agent.agenticLoop(mockSandbox)).resolves.not.toThrow();
     expect(global.fetch).toHaveBeenCalledTimes(3);
+  });
+
+  test('Claude path: feeds all parallel tool_use results back in one user message', async () => {
+    process.env.ANTHROPIC_API_KEY = 'test-key';
+    const claudeAgent = new CoderAgent(makeIssue(), null, makeProjectRepo());
+    claudeAgent.log = jest.fn();
+
+    mockSandbox.readFile.mockResolvedValue('file content');
+    mockSandbox.listDir.mockResolvedValue(['a.js', 'b.js']);
+
+    global.fetch = jest.fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: jest.fn().mockResolvedValue({
+          content: [
+            { type: 'tool_use', name: 'read_file', input: { path: 'a.js' }, id: 'tu_1' },
+            { type: 'tool_use', name: 'read_file', input: { path: 'b.js' }, id: 'tu_2' },
+          ],
+        }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: jest.fn().mockResolvedValue({
+          content: [{ type: 'text', text: 'All files read. Done.' }],
+        }),
+      });
+
+    await claudeAgent.agenticLoop(mockSandbox);
+
+    const secondFetchBody = JSON.parse(global.fetch.mock.calls[1][1].body);
+    const msgs = secondFetchBody.messages;
+    const toolResultMsg = msgs[msgs.length - 1];
+    expect(toolResultMsg.role).toBe('user');
+    expect(Array.isArray(toolResultMsg.content)).toBe(true);
+    expect(toolResultMsg.content).toHaveLength(2);
+    expect(toolResultMsg.content[0]).toMatchObject({ type: 'tool_result', tool_use_id: 'tu_1' });
+    expect(toolResultMsg.content[1]).toMatchObject({ type: 'tool_result', tool_use_id: 'tu_2' });
+
+    delete process.env.ANTHROPIC_API_KEY;
   });
 });
 
@@ -387,6 +469,51 @@ describe('CoderAgent.commitAndPush', () => {
 
     await expect(agent.commitAndPush(mockSandbox)).rejects.toThrow('Push failed');
   });
+
+  test('writes a .gitignore before git add when none exists (Node stack)', async () => {
+    mockSandbox.exec
+      .mockResolvedValueOnce({ stdout: 'M app.js', stderr: '', exitCode: 0 }) // status
+      .mockResolvedValueOnce({ stdout: '', stderr: '', exitCode: 0 })           // add
+      .mockResolvedValueOnce({ stdout: '', stderr: '', exitCode: 0 })           // commit
+      .mockResolvedValueOnce({ stdout: '', stderr: '', exitCode: 0 });          // push
+    mockSandbox.readFile.mockRejectedValue(new Error('ENOENT'));
+    mockSandbox.listDir.mockResolvedValue(['package.json', 'app.js']);
+
+    await agent.commitAndPush(mockSandbox);
+
+    expect(mockSandbox.writeFile).toHaveBeenCalledWith('.gitignore', expect.stringContaining('node_modules/'));
+  });
+
+  test('writes a Python .gitignore excluding __pycache__ and .coverage', async () => {
+    mockSandbox.exec
+      .mockResolvedValueOnce({ stdout: 'M app.py', stderr: '', exitCode: 0 })
+      .mockResolvedValueOnce({ stdout: '', stderr: '', exitCode: 0 })
+      .mockResolvedValueOnce({ stdout: '', stderr: '', exitCode: 0 })
+      .mockResolvedValueOnce({ stdout: '', stderr: '', exitCode: 0 });
+    mockSandbox.readFile.mockRejectedValue(new Error('ENOENT'));
+    mockSandbox.listDir.mockResolvedValue(['requirements.txt', 'app.py']);
+
+    await agent.commitAndPush(mockSandbox);
+
+    const [, content] = mockSandbox.writeFile.mock.calls.find(c => c[0] === '.gitignore');
+    expect(content).toContain('__pycache__/');
+    expect(content).toContain('.coverage');
+    expect(content).not.toContain('node_modules/');
+  });
+
+  test('does not write .gitignore when one already exists', async () => {
+    mockSandbox.exec
+      .mockResolvedValueOnce({ stdout: 'M app.js', stderr: '', exitCode: 0 })
+      .mockResolvedValueOnce({ stdout: '', stderr: '', exitCode: 0 })
+      .mockResolvedValueOnce({ stdout: '', stderr: '', exitCode: 0 })
+      .mockResolvedValueOnce({ stdout: '', stderr: '', exitCode: 0 });
+    mockSandbox.readFile.mockResolvedValue('node_modules/\n');
+
+    await agent.commitAndPush(mockSandbox);
+
+    const gitignoreWrite = mockSandbox.writeFile.mock.calls.find(c => c[0] === '.gitignore');
+    expect(gitignoreWrite).toBeUndefined();
+  });
 });
 
 // ── openPR ────────────────────────────────────────────────────────────────────
@@ -423,6 +550,28 @@ describe('CoderAgent.openPR', () => {
     await agent.openPR();
     expect(mockOctokit.issues.update).toHaveBeenCalledWith(
       expect.objectContaining({ labels: ['status:review'] })
+    );
+  });
+
+  test('completed PR is not a draft and contains Closes reference', async () => {
+    await agent.openPR(true);
+    expect(mockOctokit.pulls.create).toHaveBeenCalledWith(
+      expect.objectContaining({ draft: false, body: expect.stringContaining('Closes #42') })
+    );
+  });
+
+  test('incomplete PR is a draft and omits Closes reference', async () => {
+    await agent.openPR(false);
+    const call = mockOctokit.pulls.create.mock.calls[0][0];
+    expect(call.draft).toBe(true);
+    expect(call.body).not.toContain('Closes');
+    expect(call.body).toContain('unverified');
+  });
+
+  test('incomplete PR labels issue status:needs-work', async () => {
+    await agent.openPR(false);
+    expect(mockOctokit.issues.update).toHaveBeenCalledWith(
+      expect.objectContaining({ labels: ['status:needs-work'] })
     );
   });
 });

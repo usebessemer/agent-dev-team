@@ -1,7 +1,5 @@
 const fs = require('fs');
 const path = require('path');
-// Suppress Octokit request logging
-process.env.NODE_DEBUG = '';
 
 const { createBotClient, postToChannel, waitForApproval } = require('../../discord/client');
 const { Octokit } = require('@octokit/rest');
@@ -25,7 +23,8 @@ class PMAgent {
     this.owner = process.env.GITHUB_OWNER;
     this.repo = process.env.GITHUB_REPO;
     this.ollamaUrl = process.env.OLLAMA_BASE_URL || 'http://127.0.0.1:11434';
-    this.model = process.env.MANAGER_MODEL || 'llama3.1:8b';
+    this.anthropicKey = process.env.ANTHROPIC_API_KEY;
+    this.model = process.env.MANAGER_MODEL || (this.anthropicKey ? 'claude-sonnet-4-6' : 'llama3.1:8b');
     this.projectRepo = null;
 
     this.ready = new Promise((resolve) => {
@@ -166,17 +165,9 @@ class PMAgent {
       confidence = 'medium';
       notes = `Based on mean of ${relevantHistory.length} past ${this.spec.projectType} projects`;
     } else {
-      const hoursResponse = await fetch(`${this.ollamaUrl}/api/generate`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          model: this.model,
-          prompt: `You are a project manager. Given this project: "${this.spec.projectName}" (type: ${this.spec.projectType || 'unknown'}) with ${this.spec.deliverables?.length || 1} deliverables, estimate total development hours. Respond with ONLY a single number between 1 and 100. No other text.`,
-          stream: false
-        })
-      });
-      const hoursData = await hoursResponse.json();
-      hours = parseInt(hoursData.response.trim().match(/\d+/)?.[0] || '8');
+      hours = this.anthropicKey
+        ? await this._coldStartEstimateClaude()
+        : await this._coldStartEstimateOllama();
       confidence = 'low';
       notes = relevantHistory.length > 0
         ? `Insufficient history (${relevantHistory.length}/${MIN_SAMPLE} required) for ${this.spec.projectType}. LLM estimate only.`
@@ -197,6 +188,43 @@ class PMAgent {
       confidence,
       notes
     };
+  }
+
+  async _coldStartEstimateOllama() {
+    const prompt = `You are a project manager. Given this project: "${this.spec.projectName}" (type: ${this.spec.projectType || 'unknown'}) with ${this.spec.deliverables?.length || 1} deliverables, estimate total development hours. Respond with ONLY a single number between 1 and 100. No other text.`;
+    const response = await fetch(`${this.ollamaUrl}/api/generate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: this.model, prompt, stream: false }),
+    });
+    if (!response.ok) throw new Error(`Ollama estimate error ${response.status}`);
+    const data = await response.json();
+    if (!data.response) throw new Error('Ollama returned empty response for estimate');
+    return parseInt(data.response.trim().match(/\d+/)?.[0] || '8');
+  }
+
+  async _coldStartEstimateClaude() {
+    const prompt = `You are a project manager. Given this project: "${this.spec.projectName}" (type: ${this.spec.projectType || 'unknown'}) with ${this.spec.deliverables?.length || 1} deliverables, estimate total development hours. Respond with ONLY a single number between 1 and 100. No other text.`;
+    const response = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': this.anthropicKey,
+        'anthropic-version': '2023-06-01',
+      },
+      body: JSON.stringify({
+        model: this.model,
+        max_tokens: 16,
+        messages: [{ role: 'user', content: prompt }],
+      }),
+    });
+    if (!response.ok) {
+      const err = await response.json().catch(() => ({}));
+      throw new Error(`Claude estimate error ${response.status}: ${err.error?.message || 'unknown'}`);
+    }
+    const data = await response.json();
+    const text = data.content?.find(b => b.type === 'text')?.text || '8';
+    return parseInt(text.trim().match(/\d+/)?.[0] || '8');
   }
 
   /**

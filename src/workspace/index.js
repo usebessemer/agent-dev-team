@@ -4,7 +4,7 @@ const path = require('path');
 const { promisify } = require('util');
 const exec = promisify(require('child_process').exec);
 
-class Sandbox {
+class Workspace {
   constructor({ repoUrl, branch = 'main', token, timeoutMs = 300000 }) {
     this.repoUrl = repoUrl;
     this.branch = branch;
@@ -14,7 +14,7 @@ class Sandbox {
   }
 
   async boot() {
-    this.workdir = await fs.mkdtemp(path.join(os.tmpdir(), 'adt-sandbox-'));
+    this.workdir = await fs.mkdtemp(path.join(os.tmpdir(), 'adt-workspace-'));
     try {
       const result = await this._exec(`git clone --depth 1 --branch ${this.branch} ${this._authUrl()} .`);
       if (result.exitCode !== 0) {
@@ -27,24 +27,24 @@ class Sandbox {
   }
 
   async exec(cmd) {
-    if (!this.workdir) throw new Error('Sandbox not booted — call boot() first');
+    if (!this.workdir) throw new Error('Workspace not booted — call boot() first');
     return this._exec(cmd);
   }
 
   async readFile(filePath) {
-    if (!this.workdir) throw new Error('Sandbox not booted — call boot() first');
+    if (!this.workdir) throw new Error('Workspace not booted — call boot() first');
     return fs.readFile(path.join(this.workdir, filePath), 'utf8');
   }
 
   async writeFile(filePath, content) {
-    if (!this.workdir) throw new Error('Sandbox not booted — call boot() first');
+    if (!this.workdir) throw new Error('Workspace not booted — call boot() first');
     const abs = path.join(this.workdir, filePath);
     await fs.mkdir(path.dirname(abs), { recursive: true });
     await fs.writeFile(abs, content, 'utf8');
   }
 
   async listDir(dirPath) {
-    if (!this.workdir) throw new Error('Sandbox not booted — call boot() first');
+    if (!this.workdir) throw new Error('Workspace not booted — call boot() first');
     return fs.readdir(path.join(this.workdir, dirPath));
   }
 
@@ -80,4 +80,4 @@ class Sandbox {
   }
 }
 
-module.exports = Sandbox;
+module.exports = Workspace;

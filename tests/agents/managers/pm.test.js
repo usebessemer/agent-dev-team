@@ -51,6 +51,36 @@ const makeSpec = (overrides = {}) => ({
   ...overrides,
 });
 
+describe('PMAgent constructor — model defaults', () => {
+  beforeEach(() => {
+    delete process.env.ANTHROPIC_API_KEY;
+    delete process.env.MANAGER_MODEL;
+  });
+
+  afterEach(() => {
+    delete process.env.ANTHROPIC_API_KEY;
+    delete process.env.MANAGER_MODEL;
+  });
+
+  test('defaults model to claude-sonnet-4-6 when ANTHROPIC_API_KEY is set', () => {
+    process.env.ANTHROPIC_API_KEY = 'test-key';
+    const agent = new PMAgent(makeSpec(), { managers: 'ch-managers' });
+    expect(agent.model).toBe('claude-sonnet-4-6');
+  });
+
+  test('defaults model to llama3.1:8b when ANTHROPIC_API_KEY is not set', () => {
+    const agent = new PMAgent(makeSpec(), { managers: 'ch-managers' });
+    expect(agent.model).toBe('llama3.1:8b');
+  });
+
+  test('respects MANAGER_MODEL override regardless of ANTHROPIC_API_KEY', () => {
+    process.env.ANTHROPIC_API_KEY = 'test-key';
+    process.env.MANAGER_MODEL = 'claude-opus-4-7';
+    const agent = new PMAgent(makeSpec(), { managers: 'ch-managers' });
+    expect(agent.model).toBe('claude-opus-4-7');
+  });
+});
+
 describe('PMAgent.readEstimationHistory', () => {
   let agent;
 
@@ -104,6 +134,7 @@ describe('PMAgent.buildEstimate', () => {
   beforeEach(() => {
     agent = new PMAgent(makeSpec(), { managers: 'ch-managers' });
     global.fetch = jest.fn().mockResolvedValue({
+      ok: true,
       json: jest.fn().mockResolvedValue({ response: '8' }),
     });
   });
@@ -233,6 +264,50 @@ describe('PMAgent.buildEstimate', () => {
   test('breakdown has one entry per deliverable', async () => {
     const estimate = await agent.buildEstimate({ projects: [] });
     expect(estimate.breakdown).toHaveLength(makeSpec().deliverables.length);
+  });
+
+  test('routes cold-start to Claude API when ANTHROPIC_API_KEY is set', async () => {
+    process.env.ANTHROPIC_API_KEY = 'test-key';
+    const claudeAgent = new PMAgent(makeSpec(), { managers: 'ch-managers' });
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      json: jest.fn().mockResolvedValue({
+        content: [{ type: 'text', text: '12' }],
+      }),
+    });
+
+    const estimate = await claudeAgent.buildEstimate({ projects: [] });
+
+    const [url] = global.fetch.mock.calls[0];
+    expect(url).toBe('https://api.anthropic.com/v1/messages');
+    expect(estimate.hours).toBe(12);
+    expect(estimate.confidence).toBe('low');
+
+    delete process.env.ANTHROPIC_API_KEY;
+  });
+
+  test('Claude cold-start throws cleanly on non-ok response', async () => {
+    process.env.ANTHROPIC_API_KEY = 'test-key';
+    const claudeAgent = new PMAgent(makeSpec(), { managers: 'ch-managers' });
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: false,
+      status: 401,
+      json: jest.fn().mockResolvedValue({ error: { message: 'Invalid API key' } }),
+    });
+
+    await expect(claudeAgent.buildEstimate({ projects: [] })).rejects.toThrow('Claude estimate error 401');
+
+    delete process.env.ANTHROPIC_API_KEY;
+  });
+
+  test('Ollama cold-start throws cleanly on non-ok response', async () => {
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: false,
+      status: 503,
+      json: jest.fn().mockResolvedValue({}),
+    });
+
+    await expect(agent.buildEstimate({ projects: [] })).rejects.toThrow('Ollama estimate error 503');
   });
 });
 

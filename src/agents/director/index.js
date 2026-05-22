@@ -103,10 +103,12 @@ class Director {
     const { spec } = this.activeBriefs[channelId];
     await postToChannel(this.client, channelId, '🔄 Updating spec...');
 
-    const updatedSpec = await this._refineSpecWithModel(spec, instruction);
+    const updatedSpec = await this._refineSpecWithModel(spec, instruction, channelId);
     this.activeBriefs[channelId].spec = updatedSpec;
 
-    await postToChannel(this.client, channelId, this._formatDraftSpec(updatedSpec));
+    if (updatedSpec !== spec) {
+      await postToChannel(this.client, channelId, this._formatDraftSpec(updatedSpec));
+    }
   }
 
   async confirmSpec(channelId) {
@@ -158,54 +160,68 @@ class Director {
     return formatted.length > 1900 ? formatted.slice(0, 1900) + '...' : formatted;
   }
 
-  async _refineSpecWithModel(currentSpec, instruction) {
-    return this.useClaudeApi
-      ? this._refineSpecWithClaude(currentSpec, instruction)
-      : this._refineSpecWithOllama(currentSpec, instruction);
+  async _refineSpecWithModel(currentSpec, instruction, channelId = null) {
+    const MAX_ATTEMPTS = 3;
+    let lastError = null;
+    for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+      try {
+        return this.useClaudeApi
+          ? await this._refineSpecWithClaude(currentSpec, instruction, lastError)
+          : await this._refineSpecWithOllama(currentSpec, instruction, lastError);
+      } catch (err) {
+        lastError = err.message;
+        console.error(`[Director] Refinement attempt ${attempt + 1} failed: ${err.message}`);
+      }
+    }
+    if (channelId) {
+      await postToChannel(this.client, channelId,
+        `⚠️ Couldn't apply that refinement after ${MAX_ATTEMPTS} tries. The previous spec stands. Try rephrasing?`);
+    }
+    return currentSpec;
   }
 
-  async _refineSpecWithClaude(currentSpec, instruction) {
+  async _refineSpecWithClaude(currentSpec, instruction, lastError = null) {
+    const errorHint = lastError
+      ? `\n\nYour previous attempt failed with: "${lastError}". Fix the JSON and try again.`
+      : '';
     const prompt =
       `Here is the current project spec:\n\n${JSON.stringify(currentSpec, null, 2)}\n\n` +
       `The user wants to change: "${instruction}"\n\n` +
-      `Return ONLY the updated spec as valid JSON (no markdown, no backticks). Preserve all fields that do not need to change.`;
+      `Return ONLY the updated spec as valid JSON (no markdown, no backticks). Preserve all fields that do not need to change.` +
+      errorHint;
 
     const response = await this.anthropic.messages.create({
       model: this.model,
-      max_tokens: 1024,
+      max_tokens: 4096,
       system: [{ type: 'text', text: DIRECTOR_SYSTEM_PROMPT, cache_control: { type: 'ephemeral' } }],
       messages: [{ role: 'user', content: prompt }]
     });
 
     const text = response.content[0].text.trim();
-    try {
-      const jsonMatch = text.match(/\{[\s\S]*\}/);
-      if (jsonMatch) return JSON.parse(jsonMatch[0]);
-    } catch (err) {
-      console.error('[Director] Failed to parse refined spec:', err.message);
-    }
-    return currentSpec;
+    const jsonMatch = text.match(/\{[\s\S]*\}/);
+    if (jsonMatch) return JSON.parse(jsonMatch[0]);
+    throw new Error('No JSON object found in model response');
   }
 
-  async _refineSpecWithOllama(currentSpec, instruction) {
+  async _refineSpecWithOllama(currentSpec, instruction, lastError = null) {
+    const errorHint = lastError
+      ? ` Your previous attempt failed with: "${lastError}". Fix the JSON.`
+      : '';
     const response = await fetch(`${this.ollamaUrl}/api/generate`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         model: this.model,
-        prompt: `You are the Director. Here is the current project spec:\n${JSON.stringify(currentSpec)}\n\nThe user wants: "${instruction}"\n\nReturn ONLY the updated spec as valid JSON, preserving unchanged fields.`,
-        stream: false
+        prompt: `You are the Director. Here is the current project spec:\n${JSON.stringify(currentSpec)}\n\nThe user wants: "${instruction}"\n\nReturn ONLY the updated spec as valid JSON, preserving unchanged fields.${errorHint}`,
+        stream: false,
+        options: { num_predict: 4096 }
       })
     });
     const data = await response.json();
     const text = data.response.trim();
-    try {
-      const jsonMatch = text.match(/\{[\s\S]*\}/);
-      if (jsonMatch) return JSON.parse(jsonMatch[0]);
-    } catch (err) {
-      console.error('[Director] Failed to parse refined spec:', err.message);
-    }
-    return currentSpec;
+    const jsonMatch = text.match(/\{[\s\S]*\}/);
+    if (jsonMatch) return JSON.parse(jsonMatch[0]);
+    throw new Error('No JSON object found in model response');
   }
 
   async buildSpec(brief, projectName = null) {
@@ -312,6 +328,9 @@ class Director {
       `- brief: { problemStatement, desiredOutcome, constraints: { technical: [strings] }, antiGoals: [strings] }\n` +
       `- architecture: { overview, components: [{ name, description }], techStack: { language, runtime, packages: [strings] } }\n` +
       `- deliverables: [{ name, type: "code" or "docs", description, acceptanceCriteria: [strings, at least 1] }]\n\n` +
+      `IMPORTANT deliverables rules:\n` +
+      `- Do NOT create a standalone testing, "Test Suite", or QA deliverable. Tests are not a separate deliverable.\n` +
+      `- Every deliverable of type "code" must include its own automated tests, expressed as acceptanceCriteria entries (e.g. "unit tests cover X", "test suite passes").\n\n` +
       `Supported stacks: JavaScript/node (express, jest, etc.), Python/python3 (flask, pytest, pandas, etc.), Go/go (standard library).\n` +
       `Match the tech stack to the brief — a Python brief gets Python, a Go brief gets Go.\n\n` +
       `Respond with ONLY valid JSON (no markdown, no backticks, no explanation).`
@@ -344,6 +363,9 @@ class Director {
       if (!d.name) errors.push('each deliverable must have a name');
       if (!Array.isArray(d.acceptanceCriteria) || d.acceptanceCriteria.length === 0) {
         errors.push(`deliverable "${d.name || '(unnamed)'}" must have at least one acceptanceCriteria`);
+      }
+      if (/(^|[-\s])(tests?|testing|qa)([-\s]|$)/i.test(d.name || '')) {
+        errors.push(`deliverable "${d.name}" looks like a standalone test/QA deliverable — fold tests into the code deliverable's acceptanceCriteria instead`);
       }
     }
 

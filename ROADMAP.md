@@ -28,10 +28,9 @@ Each project gets its own GitHub repo (created by PM). Estimation history is wri
 - Synced `README.md` and `ARCHITECTURE.md` with v1.2 reality
 
 ### v1.3.0 — Agents that actually act
-- Docker sandbox per Coder, with the project repo checked out into the container
-- Tool-using agentic Coder loop (Read / Edit / Write / Bash) iterating until tests pass
-- Tech Lead pulls the PR branch, runs the project's tests in a sandbox, and merges only on green
-- Replaced `score >= 3` numeric merge gate with real verification signals (tests, build, lint)
+- Tool-using agentic Coder loop (read_file / write_file / list_dir / exec / done) iterating until the model calls `done`
+- Tech Lead pulls the PR branch, runs the project's tests in a workspace (host execution; no container isolation yet), and merges only on green
+- Replaced `score >= 3` numeric merge gate with real verification signals (tests pass / fail / not-run)
 
 ### v1.4.0 — A Director that actually directs
 - Multi-turn spec refinement — Director posts a draft to `#director`, executive refines in plain language, `confirm` sends to `#approvals` (#113)
@@ -48,7 +47,41 @@ Each project gets its own GitHub repo (created by PM). Estimation history is wri
 
 ## v1.x — Making it real software
 
-The v1.x line is about closing the gap between **what the docs claim** and **what the code does**. v1.5 ships the persistence and concurrency foundations. The system is now something a working developer can use without caveats.
+The v1.x line closes the gap between **what the docs claim** and **what the code does**, then hardens the system for real-world use.
+
+### v1.6.0 — Truth in advertising ✓ (current)
+- Reconcile ROADMAP, README, and ARCHITECTURE with what is actually shipped — no false claims in any "Shipped" section
+- Rename `Sandbox` → `Workspace` throughout; add explicit host-execution warnings so contributors understand the trust model
+- Add `npm run lint` and fix ESLint config; add lint + audit steps to CI
+- Hygiene: remove dead code, fix package.json metadata, remove stale docs
+
+### v1.7.0 — Architecture cleanup
+- Extract `src/llm/client.js` — single `chat()` entry point routing to Claude SDK or Ollama; eliminates per-agent branching on `ANTHROPIC_API_KEY`
+- Migrate Coder's `callClaude` from raw `fetch` to the Anthropic SDK
+- Implement real Ollama tool-use via the chat API's `tools` parameter (replace regex-parse hack)
+- Refactor `escalate()` to post via webhook instead of spinning up a Director bot client
+
+### v1.8.0 — Real Docker sandbox
+- Container isolation for Coder and Tech Lead: pinned image, network isolation, resource limits, hard timeouts
+- Project repo checked out inside the container; workers never execute on the host
+- Documents the threat model and trust boundaries
+
+### v1.9.0 — Security hardening
+- Default project repos to private (currently created public; the highest-blast-radius security default)
+- Webhook handler fails closed on missing or invalid signature (currently fails open if secret unset)
+- Discord approval author allowlist (currently any non-bot user in #approvals can approve)
+- Commit message + branch interpolation: pass via stdin instead of shell-concatenating Issue titles
+- Fail-fast on missing required env vars at boot (currently silent crash minutes in)
+- Pass GitHub PAT via GIT_ASKPASS instead of embedding in clone URL
+- Set explicit permission overwrites on project Discord channels (currently inherit server defaults)
+- XML-fence untrusted Issue body in Coder prompt with instruction guards (defense-in-depth against prompt injection)
+
+### v1.10.0 — Cost + resilience
+- Per-Issue token cap and per-project cost cap with hard stops, warnings at 50% and 80%, persisted across crashes
+- Worker spawn-failure handling: don't mark an Issue handled until spawn succeeds (currently sticks forever on transient failure)
+- Clear poll timers on closeProject (currently leak forever per closed project)
+- Coder resume must handle the case where a remote branch already exists from a pre-crash push
+- Tech Lead must not auto-merge non-Node projects without verification (currently `passed: null` silently approves)
 
 ---
 

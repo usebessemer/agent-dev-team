@@ -189,11 +189,12 @@ describe('Director.refineSpec', () => {
     };
   });
 
-  test('calls _refineSpecWithModel with current spec and instruction', async () => {
+  test('calls _refineSpecWithModel with current spec, instruction, and channelId', async () => {
     await director.refineSpec('test-channel-director', 'Make it Python');
     expect(director._refineSpecWithModel).toHaveBeenCalledWith(
-      director.activeBriefs['test-channel-director'] ? expect.anything() : expect.anything(),
-      'Make it Python'
+      expect.anything(),
+      'Make it Python',
+      'test-channel-director'
     );
   });
 
@@ -480,6 +481,47 @@ describe('Director._validateSpec', () => {
       expect(director._validateSpec(spec)).toEqual([]);
     }
   });
+
+  test('returns error when a deliverable name looks like a standalone test/QA deliverable', () => {
+    for (const badName of ['test-suite', 'Test Suite', 'qa-tests', 'automated-qa']) {
+      const spec = {
+        ...VALID_SPEC,
+        deliverables: [{ name: badName, type: 'code', description: 'Tests', acceptanceCriteria: ['passes'] }]
+      };
+      const errors = director._validateSpec(spec);
+      expect(errors).toContainEqual(expect.stringContaining('standalone test'));
+    }
+  });
+
+  test('does not flag deliverables whose names contain "test"/"qa" only as a substring', () => {
+    for (const safeName of ['attestation-service', 'contest-platform', 'latest-news-feed']) {
+      const spec = {
+        ...VALID_SPEC,
+        deliverables: [{ name: safeName, type: 'code', description: 'App', acceptanceCriteria: ['loads'] }]
+      };
+      expect(director._validateSpec(spec)).toEqual([]);
+    }
+  });
+});
+
+describe('Director._buildSpecPrompt', () => {
+  let director;
+
+  beforeEach(() => {
+    director = new Director();
+  });
+
+  test('instructs the model not to create a standalone test/QA deliverable', () => {
+    const prompt = director._buildSpecPrompt('Build a calculator');
+    expect(prompt).toContain('Do NOT create a standalone testing');
+    expect(prompt).toContain('Test Suite');
+  });
+
+  test('instructs the model that code deliverables must include tests in acceptanceCriteria', () => {
+    const prompt = director._buildSpecPrompt('Build a calculator');
+    expect(prompt).toContain('acceptanceCriteria');
+    expect(prompt).toContain('automated tests');
+  });
 });
 
 describe('Director with Claude API', () => {
@@ -599,15 +641,14 @@ describe('Director with Claude API', () => {
     expect(result).toEqual(updatedSpec);
   });
 
-  test('_refineSpecWithClaude returns currentSpec unchanged when model returns invalid JSON', async () => {
+  test('_refineSpecWithClaude throws when model returns invalid JSON', async () => {
     const currentSpec = { spec: { projectName: 'my-app' } };
 
     mockAnthropicCreate.mockResolvedValue({
       content: [{ text: 'Sorry, I could not update the spec.' }],
     });
 
-    const result = await director._refineSpecWithClaude(currentSpec, 'Make it Python');
-    expect(result).toBe(currentSpec);
+    await expect(director._refineSpecWithClaude(currentSpec, 'Make it Python')).rejects.toThrow();
   });
 
   test('_refineSpecWithClaude caches the system prompt', async () => {
@@ -619,5 +660,119 @@ describe('Director with Claude API', () => {
 
     const call = mockAnthropicCreate.mock.calls[0][0];
     expect(call.system[0].cache_control).toEqual({ type: 'ephemeral' });
+  });
+
+  test('_refineSpecWithClaude uses max_tokens 4096', async () => {
+    mockAnthropicCreate.mockResolvedValue({
+      content: [{ text: JSON.stringify(VALID_SPEC) }],
+    });
+
+    await director._refineSpecWithClaude({}, 'add a deliverable');
+
+    const call = mockAnthropicCreate.mock.calls[0][0];
+    expect(call.max_tokens).toBe(4096);
+  });
+
+  test('_refineSpecWithClaude parses a grown spec without truncation errors', async () => {
+    const grownSpec = {
+      ...VALID_SPEC,
+      deliverables: [
+        ...VALID_SPEC.deliverables,
+        { name: 'csv2json-validator', type: 'code', description: 'Validates output', acceptanceCriteria: ['validates schema', 'rejects malformed input'] },
+        { name: 'csv2json-docs', type: 'docs', description: 'Usage docs', acceptanceCriteria: ['covers all flags'] },
+      ]
+    };
+
+    mockAnthropicCreate.mockResolvedValue({
+      content: [{ text: JSON.stringify(grownSpec) }],
+    });
+
+    const result = await director._refineSpecWithClaude(VALID_SPEC, 'add validator and docs deliverables');
+    expect(result.deliverables).toHaveLength(3);
+    expect(result.deliverables[1].name).toBe('csv2json-validator');
+  });
+});
+
+describe('Director._refineSpecWithModel (retry behavior)', () => {
+  let director;
+
+  beforeEach(() => {
+    process.env.ANTHROPIC_API_KEY = 'test-anthropic-key';
+    delete process.env.DIRECTOR_MODEL;
+    director = new Director();
+    mockAnthropicCreate.mockReset();
+    postToChannel.mockClear();
+  });
+
+  afterEach(() => {
+    delete process.env.ANTHROPIC_API_KEY;
+    process.env.DIRECTOR_MODEL = 'llama3.1:8b';
+  });
+
+  test('returns updated spec when second attempt succeeds after first parse failure', async () => {
+    const currentSpec = { spec: { projectName: 'my-app' } };
+    const updatedSpec = { spec: { projectName: 'my-app-updated' } };
+    mockAnthropicCreate
+      .mockResolvedValueOnce({ content: [{ text: 'not valid json at all' }] })
+      .mockResolvedValue({ content: [{ text: JSON.stringify(updatedSpec) }] });
+
+    const result = await director._refineSpecWithModel(currentSpec, 'Update it', null);
+    expect(result).toEqual(updatedSpec);
+    expect(mockAnthropicCreate).toHaveBeenCalledTimes(2);
+  });
+
+  test('feeds the parse error into the prompt on retry', async () => {
+    const currentSpec = { spec: { projectName: 'my-app' } };
+    const updatedSpec = { spec: { projectName: 'my-app-updated' } };
+    mockAnthropicCreate
+      .mockResolvedValueOnce({ content: [{ text: 'not valid json' }] })
+      .mockResolvedValue({ content: [{ text: JSON.stringify(updatedSpec) }] });
+
+    await director._refineSpecWithModel(currentSpec, 'Update it', null);
+    const retryPrompt = mockAnthropicCreate.mock.calls[1][0].messages[0].content;
+    expect(retryPrompt).toContain('previous attempt failed');
+  });
+
+  test('returns currentSpec unchanged (same reference) after all retries exhausted', async () => {
+    const currentSpec = { spec: { projectName: 'my-app' } };
+    mockAnthropicCreate.mockResolvedValue({ content: [{ text: 'not json' }] });
+
+    const result = await director._refineSpecWithModel(currentSpec, 'Update it', null);
+    expect(result).toBe(currentSpec);
+    expect(mockAnthropicCreate).toHaveBeenCalledTimes(3);
+  });
+
+  test('posts notification to channel when all retries exhausted', async () => {
+    const currentSpec = { spec: { projectName: 'my-app' } };
+    mockAnthropicCreate.mockResolvedValue({ content: [{ text: 'not json' }] });
+
+    await director._refineSpecWithModel(currentSpec, 'Update it', 'test-channel-director');
+    expect(postToChannel).toHaveBeenCalledWith(
+      director.client,
+      'test-channel-director',
+      expect.stringContaining('previous spec stands')
+    );
+  });
+
+  test('does not post notification when channelId is null', async () => {
+    const currentSpec = { spec: { projectName: 'my-app' } };
+    mockAnthropicCreate.mockResolvedValue({ content: [{ text: 'not json' }] });
+
+    await director._refineSpecWithModel(currentSpec, 'Update it', null);
+    expect(postToChannel).not.toHaveBeenCalled();
+  });
+
+  test('refineSpec does not re-display draft spec when refinement returns unchanged spec', async () => {
+    director.activeBriefs['test-channel-director'] = {
+      spec: { spec: { projectName: 'my-app', brief: { desiredOutcome: 'x' }, architecture: { techStack: { language: 'js', runtime: 'node', packages: [] } }, deliverables: [] } },
+      brief: 'original brief'
+    };
+    mockAnthropicCreate.mockResolvedValue({ content: [{ text: 'not json' }] });
+
+    postToChannel.mockClear();
+    await director.refineSpec('test-channel-director', 'Make it Python');
+
+    const draftCall = postToChannel.mock.calls.find(c => c[2] && c[2].includes('Draft Spec'));
+    expect(draftCall).toBeUndefined();
   });
 });

@@ -1,6 +1,6 @@
 const { createWebhookClient, postAsWorker } = require('../../discord/client');
 const { Octokit } = require('@octokit/rest');
-const Sandbox = require('../../sandbox');
+const Workspace = require('../../workspace');
 
 const TOOLS = [
   {
@@ -67,7 +67,8 @@ Use tools to explore the repo, write files, install dependencies, and run tests.
 
 Rules:
 - Always read existing files before overwriting them
-- Run tests after writing code (if a test script exists)
+- Write automated tests for the code you produce, in the same task and PR
+- Run the tests after writing them; do not call done() until tests exist and pass
 - Only call done() when the task is fully implemented and verified`;
 
 class CoderAgent {
@@ -82,41 +83,44 @@ class CoderAgent {
     this.anthropicKey = process.env.ANTHROPIC_API_KEY;
     this.agentName = `Coder-task-${issue.number}`;
     this.branchName = `coder/${issue.number}/${this.slugify(issue.title)}`;
-    this.maxIterations = parseInt(process.env.CODER_MAX_ITERATIONS) || 10;
+    this.maxIterations = parseInt(process.env.CODER_MAX_ITERATIONS) || 25;
     this.webhook = null;
   }
 
   async run() {
     await this.log(`🚀 Spawned for Issue #${this.issue.number}: ${this.issue.title}`);
 
-    const sandbox = new Sandbox({
+    const workspace = new Workspace({
       repoUrl: `https://github.com/${this.owner}/${this.repo}.git`,
       branch: 'main',
       token: process.env.GITHUB_TOKEN,
     });
 
     try {
-      await sandbox.boot();
-      await this.log(`📦 Sandbox ready`);
+      await workspace.boot();
+      await this.log(`📦 Workspace ready`);
 
-      const checkout = await sandbox.exec(`git checkout -b ${this.branchName}`);
+      const checkout = await workspace.exec(`git checkout -b ${this.branchName}`);
       if (checkout.exitCode !== 0) throw new Error(`Branch creation failed: ${checkout.stderr}`);
 
-      await this.agenticLoop(sandbox);
-      await this.commitAndPush(sandbox);
-      await this.openPR();
-      await this.log(`✅ PR opened for Issue #${this.issue.number}. Discarding.`);
+      const status = await this.agenticLoop(workspace);
+      await this.commitAndPush(workspace);
+      await this.openPR(status === 'completed');
+      const finalMsg = status === 'completed'
+        ? `✅ PR opened for Issue #${this.issue.number}. Discarding.`
+        : `⚠️ PR opened as draft for Issue #${this.issue.number} — max iterations reached, work unverified. Discarding.`;
+      await this.log(finalMsg);
     } catch (err) {
       await this.log(`❌ Fatal error on Issue #${this.issue.number}: ${err.message}`);
       await this.escalate(err.message);
     } finally {
-      await sandbox.teardown();
+      await workspace.teardown();
     }
   }
 
-  async agenticLoop(sandbox) {
+  async agenticLoop(workspace) {
     const useClaude = !!this.anthropicKey;
-    const listing = await sandbox.listDir('.');
+    const listing = await workspace.listDir('.');
     const userPrompt = `Task: ${this.issue.title}\n\n${this.issue.body}\n\nRepo root contains: ${listing.join(', ')}`;
 
     const messages = [{ role: 'user', content: userPrompt }];
@@ -126,33 +130,42 @@ class CoderAgent {
 
       if (response.tool === 'done') {
         await this.log(`✅ Agent done: ${response.args.summary}`);
-        return;
+        return 'completed';
       }
 
-      await this.log(`🔧 ${response.tool}(${JSON.stringify(response.args)})`);
-
-      let toolResult;
-      try {
-        toolResult = await this.executeTool(response.tool, response.args, sandbox);
-      } catch (err) {
-        toolResult = `Error: ${err.message}`;
-      }
-
-      const resultStr = typeof toolResult === 'object' ? JSON.stringify(toolResult) : String(toolResult ?? '');
-
-      if (useClaude) {
+      if (response.toolUses) {
+        // Claude path — one or more parallel tool_use blocks in a single response
+        const toolResults = [];
+        for (const toolUse of response.toolUses) {
+          await this.log(`🔧 ${toolUse.name}(${JSON.stringify(toolUse.input)})`);
+          let result;
+          try {
+            result = await this.executeTool(toolUse.name, toolUse.input, workspace);
+          } catch (err) {
+            result = `Error: ${err.message}`;
+          }
+          const resultStr = typeof result === 'object' ? JSON.stringify(result) : String(result ?? '');
+          toolResults.push({ type: 'tool_result', tool_use_id: toolUse.id, content: resultStr });
+        }
         messages.push({ role: 'assistant', content: response.raw });
-        messages.push({
-          role: 'user',
-          content: [{ type: 'tool_result', tool_use_id: response.id, content: resultStr }],
-        });
+        messages.push({ role: 'user', content: toolResults });
       } else {
+        // Ollama path — single tool per response
+        await this.log(`🔧 ${response.tool}(${JSON.stringify(response.args)})`);
+        let toolResult;
+        try {
+          toolResult = await this.executeTool(response.tool, response.args, workspace);
+        } catch (err) {
+          toolResult = `Error: ${err.message}`;
+        }
+        const resultStr = typeof toolResult === 'object' ? JSON.stringify(toolResult) : String(toolResult ?? '');
         messages.push({ role: 'assistant', content: response.raw });
         messages.push({ role: 'user', content: `Tool result:\n${resultStr}` });
       }
     }
 
     await this.log(`⚠️ Max iterations reached — committing what was written`);
+    return 'incomplete';
   }
 
   async callModel(messages, useClaude) {
@@ -182,9 +195,9 @@ class CoderAgent {
 
     if (!response.ok) throw new Error(`Claude API error ${response.status}: ${data.error?.message}`);
 
-    const toolUse = data.content?.find(b => b.type === 'tool_use');
-    if (toolUse) {
-      return { tool: toolUse.name, args: toolUse.input, id: toolUse.id, raw: data.content };
+    const toolUses = data.content?.filter(b => b.type === 'tool_use') || [];
+    if (toolUses.length > 0) {
+      return { toolUses, raw: data.content };
     }
 
     const text = data.content?.find(b => b.type === 'text')?.text || 'Task complete';
@@ -227,49 +240,88 @@ assistant:`;
     }
   }
 
-  async executeTool(name, args, sandbox) {
+  async executeTool(name, args, workspace) {
     switch (name) {
-      case 'read_file': return sandbox.readFile(args.path);
-      case 'write_file': await sandbox.writeFile(args.path, args.content); return 'written';
-      case 'list_dir': return sandbox.listDir(args.path);
-      case 'exec': return sandbox.exec(args.command);
+      case 'read_file': return workspace.readFile(args.path);
+      case 'write_file': await workspace.writeFile(args.path, args.content); return 'written';
+      case 'list_dir': return workspace.listDir(args.path);
+      case 'exec': return workspace.exec(args.command);
       default: return `Unknown tool: ${name}`;
     }
   }
 
-  async commitAndPush(sandbox) {
-    const status = await sandbox.exec('git status --porcelain');
+  async commitAndPush(workspace) {
+    const status = await workspace.exec('git status --porcelain');
     if (!status.stdout.trim()) {
       throw new Error('No files were written — nothing to commit');
     }
 
-    await sandbox.exec('git add -A');
-    const commit = await sandbox.exec(
+    let hasGitignore = false;
+    try {
+      await workspace.readFile('.gitignore');
+      hasGitignore = true;
+    } catch {
+      // .gitignore absent — hasGitignore stays false
+    }
+    if (!hasGitignore) {
+      const stack = await this._detectStack(workspace);
+      await workspace.writeFile('.gitignore', this._gitignoreContent(stack));
+    }
+
+    await workspace.exec('git add -A');
+    const commit = await workspace.exec(
       `git -c user.name="Coder Agent" -c user.email="coder@adt.local" commit -m "[coder-${this.issue.number}] ${this.issue.title}"`
     );
     if (commit.exitCode !== 0) throw new Error(`Commit failed: ${commit.stderr}`);
 
-    const push = await sandbox.exec(`git push origin ${this.branchName}`);
+    const push = await workspace.exec(`git push origin ${this.branchName}`);
     if (push.exitCode !== 0) throw new Error(`Push failed: ${push.stderr}`);
 
     await this.log(`🚢 Branch pushed: ${this.branchName}`);
   }
 
-  async openPR() {
+  async _detectStack(workspace) {
+    try {
+      const files = await workspace.listDir('.');
+      if (files.includes('package.json')) return 'node';
+      if (files.some(f => ['requirements.txt', 'setup.py', 'pyproject.toml'].includes(f))) return 'python';
+      if (files.includes('go.mod')) return 'go';
+    } catch {
+      // if listing fails, fall through to combined default
+    }
+    return null;
+  }
+
+  _gitignoreContent(stack) {
+    const node = 'node_modules/\ndist/\n*.log\n';
+    const python = '__pycache__/\n*.pyc\n*.pyo\n.coverage\n.pytest_cache/\n*.egg-info/\nbuild/\ndist/\n';
+    const go = '*.exe\n*.test\nbuild/\n';
+    if (stack === 'node') return node;
+    if (stack === 'python') return python;
+    if (stack === 'go') return go;
+    return `${node}${python}${go}`;
+  }
+
+  async openPR(completed = true) {
+    const body = completed
+      ? `Closes #${this.issue.number}\n\nOpened by ${this.agentName}.`
+      : `Opened by ${this.agentName}.\n\n⚠️ Max iterations reached — work is unverified. Do not merge without manual review.`;
+
     const { data: pr } = await this.octokit.pulls.create({
       owner: this.owner,
       repo: this.repo,
       title: `[coder-${this.issue.number}] ${this.issue.title}`,
       head: this.branchName,
       base: 'main',
-      body: `Closes #${this.issue.number}\n\nOpened by ${this.agentName}.`,
+      body,
+      draft: !completed,
     });
 
     await this.octokit.issues.update({
       owner: this.owner,
       repo: this.repo,
       issue_number: this.issue.number,
-      labels: ['status:review'],
+      labels: [completed ? 'status:review' : 'status:needs-work'],
     });
 
     await this.log(`🔀 PR #${pr.number} opened: ${pr.html_url}`);

@@ -1,6 +1,6 @@
 const path = require('path');
 
-// Must be hoisted before Sandbox is required so promisify picks up the mock
+// Must be hoisted before Workspace is required so promisify picks up the mock
 jest.mock('child_process', () => ({
   exec: jest.fn(),
 }));
@@ -16,9 +16,9 @@ jest.mock('fs/promises', () => ({
 
 const childProcess = require('child_process');
 const fsp = require('fs/promises');
-const Sandbox = require('../../src/sandbox/index');
+const Workspace = require('../../src/workspace/index');
 
-const WORKDIR = '/tmp/adt-sandbox-abc123';
+const WORKDIR = '/tmp/adt-workspace-abc123';
 const REPO_URL = 'https://github.com/test-owner/test-repo.git';
 const TOKEN = 'ghp_testtoken';
 
@@ -46,8 +46,8 @@ beforeEach(() => {
   fsp.writeFile.mockResolvedValue(undefined);
 });
 
-function makeSandbox(overrides = {}) {
-  return new Sandbox({
+function makeWorkspace(overrides = {}) {
+  return new Workspace({
     repoUrl: REPO_URL,
     branch: 'main',
     token: TOKEN,
@@ -55,10 +55,10 @@ function makeSandbox(overrides = {}) {
   });
 }
 
-describe('Sandbox.boot', () => {
+describe('Workspace.boot', () => {
   test('creates temp dir and clones repo', async () => {
     mockExecSuccess();
-    const sb = makeSandbox();
+    const sb = makeWorkspace();
     await sb.boot();
 
     expect(fsp.mkdtemp).toHaveBeenCalledTimes(1);
@@ -72,7 +72,7 @@ describe('Sandbox.boot', () => {
 
   test('embeds token in clone URL without logging it', async () => {
     mockExecSuccess();
-    const sb = makeSandbox();
+    const sb = makeWorkspace();
     await sb.boot();
 
     const [cmd] = childProcess.exec.mock.calls[0];
@@ -82,7 +82,7 @@ describe('Sandbox.boot', () => {
 
   test('teardown is called and error re-thrown if clone fails', async () => {
     mockExecFailure(128, 'repository not found');
-    const sb = makeSandbox();
+    const sb = makeWorkspace();
 
     await expect(sb.boot()).rejects.toThrow();
     expect(fsp.rm).toHaveBeenCalledWith(WORKDIR, { recursive: true, force: true });
@@ -90,10 +90,10 @@ describe('Sandbox.boot', () => {
   });
 });
 
-describe('Sandbox.exec', () => {
+describe('Workspace.exec', () => {
   test('runs command in workdir and returns stdout/stderr/exitCode', async () => {
     mockExecSuccess('hello', '');
-    const sb = makeSandbox();
+    const sb = makeWorkspace();
     sb.workdir = WORKDIR;
 
     const result = await sb.exec('echo hello');
@@ -102,7 +102,7 @@ describe('Sandbox.exec', () => {
 
   test('returns non-zero exitCode without throwing on command failure', async () => {
     mockExecFailure(1, 'npm ERR! missing script: test');
-    const sb = makeSandbox();
+    const sb = makeWorkspace();
     sb.workdir = WORKDIR;
 
     const result = await sb.exec('npm test');
@@ -111,15 +111,15 @@ describe('Sandbox.exec', () => {
   });
 
   test('throws if called before boot', async () => {
-    const sb = makeSandbox();
-    await expect(sb.exec('ls')).rejects.toThrow('Sandbox not booted');
+    const sb = makeWorkspace();
+    await expect(sb.exec('ls')).rejects.toThrow('Workspace not booted');
   });
 });
 
-describe('Sandbox.readFile', () => {
+describe('Workspace.readFile', () => {
   test('reads file relative to workdir', async () => {
     fsp.readFile.mockResolvedValue('file contents');
-    const sb = makeSandbox();
+    const sb = makeWorkspace();
     sb.workdir = WORKDIR;
 
     const result = await sb.readFile('src/index.js');
@@ -131,14 +131,14 @@ describe('Sandbox.readFile', () => {
   });
 
   test('throws if called before boot', async () => {
-    const sb = makeSandbox();
-    await expect(sb.readFile('README.md')).rejects.toThrow('Sandbox not booted');
+    const sb = makeWorkspace();
+    await expect(sb.readFile('README.md')).rejects.toThrow('Workspace not booted');
   });
 });
 
-describe('Sandbox.writeFile', () => {
+describe('Workspace.writeFile', () => {
   test('creates parent dirs and writes file relative to workdir', async () => {
-    const sb = makeSandbox();
+    const sb = makeWorkspace();
     sb.workdir = WORKDIR;
 
     await sb.writeFile('src/new/file.js', 'content');
@@ -154,15 +154,15 @@ describe('Sandbox.writeFile', () => {
   });
 
   test('throws if called before boot', async () => {
-    const sb = makeSandbox();
-    await expect(sb.writeFile('file.js', '')).rejects.toThrow('Sandbox not booted');
+    const sb = makeWorkspace();
+    await expect(sb.writeFile('file.js', '')).rejects.toThrow('Workspace not booted');
   });
 });
 
-describe('Sandbox.listDir', () => {
+describe('Workspace.listDir', () => {
   test('lists directory relative to workdir', async () => {
     fsp.readdir.mockResolvedValue(['a.js', 'b.js']);
-    const sb = makeSandbox();
+    const sb = makeWorkspace();
     sb.workdir = WORKDIR;
 
     const entries = await sb.listDir('src');
@@ -171,14 +171,14 @@ describe('Sandbox.listDir', () => {
   });
 
   test('throws if called before boot', async () => {
-    const sb = makeSandbox();
-    await expect(sb.listDir('.')).rejects.toThrow('Sandbox not booted');
+    const sb = makeWorkspace();
+    await expect(sb.listDir('.')).rejects.toThrow('Workspace not booted');
   });
 });
 
-describe('Sandbox.teardown', () => {
+describe('Workspace.teardown', () => {
   test('removes workdir and sets it to null', async () => {
-    const sb = makeSandbox();
+    const sb = makeWorkspace();
     sb.workdir = WORKDIR;
 
     await sb.teardown();
@@ -187,13 +187,13 @@ describe('Sandbox.teardown', () => {
   });
 
   test('is a no-op if called before boot', async () => {
-    const sb = makeSandbox();
+    const sb = makeWorkspace();
     await expect(sb.teardown()).resolves.not.toThrow();
     expect(fsp.rm).not.toHaveBeenCalled();
   });
 
   test('is safe to call twice', async () => {
-    const sb = makeSandbox();
+    const sb = makeWorkspace();
     sb.workdir = WORKDIR;
 
     await sb.teardown();

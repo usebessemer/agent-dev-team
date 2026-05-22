@@ -1,8 +1,6 @@
 const { createBotClient, postToChannel } = require('../../discord/client');
 const { Octokit } = require('@octokit/rest');
-const Sandbox = require('../../sandbox');
-// Suppress Octokit request logging
-process.env.NODE_DEBUG = '';
+const Workspace = require('../../workspace');
 
 class TechLeadAgent {
   constructor(spec, projectChannels) {
@@ -14,7 +12,8 @@ class TechLeadAgent {
     this.owner = process.env.GITHUB_OWNER;
     this.repo = process.env.GITHUB_REPO;
     this.ollamaUrl = process.env.OLLAMA_BASE_URL || 'http://127.0.0.1:11434';
-    this.model = process.env.MANAGER_MODEL || 'llama3.1:8b';
+    this.anthropicKey = process.env.ANTHROPIC_API_KEY;
+    this.model = process.env.MANAGER_MODEL || (this.anthropicKey ? 'claude-sonnet-4-6' : 'llama3.1:8b');
 
     this.ready = new Promise((resolve) => {
       this.client.once('clientReady', () => {
@@ -65,7 +64,7 @@ class TechLeadAgent {
     const diff = await this.octokit.pulls.listFiles({ owner, repo, pull_number: prNumber });
     const filesChanged = diff.data.map(f => ({ filename: f.filename, changes: f.changes, patch: f.patch }));
 
-    // Run tests in a sandbox on the PR branch before scoring
+    // Run tests in a workspace on the PR branch before scoring
     const prBranch = pr.data.head.ref;
     const testResult = await this.runTestsForPR(prBranch, owner, repo);
 
@@ -122,38 +121,38 @@ class TechLeadAgent {
   }
 
   /**
-   * Creates a Sandbox on the PR branch, runs the test suite, and tears down.
+   * Creates a Workspace on the PR branch, runs the test suite, and tears down.
    * Returns { passed, output } — passed is null if tests could not be run.
    */
   async runTestsForPR(branch, owner, repo) {
-    const sandbox = new Sandbox({
+    const workspace = new Workspace({
       repoUrl: `https://github.com/${owner}/${repo}.git`,
       branch,
       token: process.env.GITHUB_TOKEN,
     });
 
     try {
-      await sandbox.boot();
-      return await this.runTests(sandbox);
+      await workspace.boot();
+      return await this.runTests(workspace);
     } catch (err) {
-      console.error(`[TechLead] Sandbox error for branch ${branch}: ${err.message}`);
-      return { passed: null, output: `Sandbox error: ${err.message}` };
+      console.error(`[TechLead] Workspace error for branch ${branch}: ${err.message}`);
+      return { passed: null, output: `Workspace error: ${err.message}` };
     } finally {
-      await sandbox.teardown();
+      await workspace.teardown();
     }
   }
 
   /**
-   * Detects the test command from package.json and runs it inside the sandbox.
+   * Detects the test command from package.json and runs it inside the workspace.
    * Returns { passed: boolean|null, output: string }
    *   passed = true  → tests ran and all passed
    *   passed = false → tests ran and failed
    *   passed = null  → could not determine (no package.json, no test script)
    */
-  async runTests(sandbox) {
+  async runTests(workspace) {
     let pkg;
     try {
-      pkg = JSON.parse(await sandbox.readFile('package.json'));
+      pkg = JSON.parse(await workspace.readFile('package.json'));
     } catch {
       return { passed: null, output: 'No package.json found' };
     }
@@ -164,12 +163,12 @@ class TechLeadAgent {
       return { passed: null, output: 'No test script defined in package.json' };
     }
 
-    const install = await sandbox.exec('npm install');
+    const install = await workspace.exec('npm install');
     if (install.exitCode !== 0) {
       return { passed: false, output: `npm install failed:\n${install.stderr || install.stdout}` };
     }
 
-    const test = await sandbox.exec('npm test');
+    const test = await workspace.exec('npm test');
     const output = [test.stdout, test.stderr].filter(Boolean).join('\n');
     return { passed: test.exitCode === 0, output };
   }
@@ -200,14 +199,32 @@ Provide brief advisory commentary on: naming clarity, error handling, code organ
 Return ONLY valid JSON with no other text:
 {"commentary":"your observations here","suggestions":["suggestion 1","suggestion 2"]}`;
 
-    const response = await fetch(`${this.ollamaUrl}/api/generate`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: this.model, prompt, stream: false, options: { temperature: 0.1 } }),
-    });
-
-    const data = await response.json();
-    const text = data.response.trim();
+    let text;
+    if (this.anthropicKey) {
+      const response = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': this.anthropicKey,
+          'anthropic-version': '2023-06-01',
+        },
+        body: JSON.stringify({
+          model: this.model,
+          max_tokens: 1024,
+          messages: [{ role: 'user', content: prompt }],
+        }),
+      });
+      const data = await response.json();
+      text = data.content[0].text.trim();
+    } else {
+      const response = await fetch(`${this.ollamaUrl}/api/generate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: this.model, prompt, stream: false, options: { temperature: 0.1 } }),
+      });
+      const data = await response.json();
+      text = data.response.trim();
+    }
 
     try {
       const jsonMatch = text.match(/\{[\s\S]*\}/);

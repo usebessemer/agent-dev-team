@@ -15,7 +15,6 @@ class Pipeline {
   constructor({ db } = {}) {
     this.octokit = new Octokit({ auth: process.env.GITHUB_TOKEN });
     this.owner = process.env.GITHUB_OWNER;
-    this.repo = process.env.GITHUB_REPO;
     this.activeProjects = {};
     this.db = db || new AgentDB(process.env.DB_PATH);
   }
@@ -142,21 +141,23 @@ class Pipeline {
     // PM runs, then persists state and starts watchers
     pm.run()
       .then(() => {
-        console.log(`[Pipeline] PM finished. Starting watchers for: ${projectName}`);
         const projectRepo = pm.projectRepo;
-        if (projectRepo) {
-          this.db.saveProject(projectName, {
-            spec: spec.spec,
-            channels: projectChannels,
-            projectRepo,
-            estimate: pm.estimate,
-            status: 'active',
-          });
+        if (!projectRepo) {
+          console.error(`[PM] No project repo created for ${projectName} — watchers not started`);
+          return;
         }
+        console.log(`[Pipeline] PM finished. Starting watchers for: ${projectName}`);
+        this.db.saveProject(projectName, {
+          spec: spec.spec,
+          channels: projectChannels,
+          projectRepo,
+          estimate: pm.estimate,
+          status: 'active',
+        });
         this.watchIssues(projectName, projectRepo);
         this.watchPRs(projectName, projectRepo);
       })
-      .catch(err => console.error('[PM] Error:', err.message));
+      .catch(err => console.error(`[PM] Fatal error for ${projectName} — watchers not started: ${err.message}`));
   }
 
   async createProjectChannels(projectName) {
@@ -197,8 +198,7 @@ class Pipeline {
     const poll = async () => {
       console.log(`[Pipeline] Polling project repo for open Issues...`);
       try {
-        const owner = projectRepo?.owner || this.owner;
-        const repo = projectRepo?.repo || this.repo;
+        const { owner, repo } = projectRepo;
 
         const { data: issues } = await this.octokit.issues.listForRepo({
             owner,
@@ -238,9 +238,7 @@ class Pipeline {
 
     const poll = async () => {
       try {
-        // Watch PRs in the project repo, not agent-dev-team
-        const owner = projectRepo?.owner || this.owner;
-        const repo = projectRepo?.repo || this.repo;
+        const { owner, repo } = projectRepo;
 
         const { data: prs } = await this.octokit.pulls.list({
           owner,
@@ -250,6 +248,10 @@ class Pipeline {
 
         for (const pr of prs) {
           if (reviewedPRs.has(pr.number)) continue;
+          if (pr.draft) {
+            console.log(`[Pipeline] PR #${pr.number} is a draft — skipping, needs manual review`);
+            continue;
+          }
           reviewedPRs.add(pr.number);
           console.log(`[Pipeline] PR found for review: #${pr.number}`);
           const result = await project.techLead.reviewPR(pr.number, projectRepo);

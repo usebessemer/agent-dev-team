@@ -1,24 +1,26 @@
 {
   "name": "agent-dev-team",
-  "version": "1.0.0",
+  "version": "1.6.0",
   "description": "An AI agent dev team.",
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
-    "test": "jest"
+    "test": "jest",
+    "lint": "eslint src/ tests/",
+    "lint:fix": "eslint src/ tests/ --fix"
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/stupeterscoaching/agent-dev-team.git"
+    "url": "git+https://github.com/usebessemer/agent-dev-team.git"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "type": "commonjs",
   "bugs": {
-    "url": "https://github.com/stupeterscoaching/agent-dev-team/issues"
+    "url": "https://github.com/usebessemer/agent-dev-team/issues"
   },
-  "homepage": "https://github.com/stupeterscoaching/agent-dev-team#readme",
+  "homepage": "https://github.com/usebessemer/agent-dev-team#readme",
   "dependencies": {
     "@anthropic-ai/sdk": "^0.95.2",
     "@octokit/rest": "^22.0.1",

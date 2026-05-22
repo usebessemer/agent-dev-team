@@ -66,6 +66,56 @@ Every project gets its own GitHub repo and its own Discord channel (`#proj-{name
 
 ---
 
+## Walkthrough
+
+agent-dev-team turns a one-line brief into a working repository through a team of
+Director, PM, Tech Lead, and Coder agents — coordinated in Discord, with you
+approving at each gate. The screenshots below follow one example: the brief
+"a CLI tool that converts CSV files to JSON".
+
+### 1. Brief → draft spec
+Post a one-line brief in `#director`. The Director generates a draft spec — goal,
+tech stack, and deliverables.
+
+![Brief and draft spec](docs/screenshots/01-brief-and-spec.png)
+
+### 2. Refine it conversationally
+Reply with changes and the Director revises the spec in place — here, adding a
+`--columns` flag. Iterate until it's right, then `confirm`.
+
+![Spec refinement](docs/screenshots/02-spec-refinement.png)
+
+### 3. Approve the spec
+The confirmed spec moves to `#approvals` for your sign-off before any work begins.
+
+![Spec approval](docs/screenshots/03-spec-approval.png)
+
+### 4. Approve the estimate
+The PM agent produces a cost-and-hours estimate. Nothing is built until you
+approve it.
+
+![Cost estimate](docs/screenshots/04-cost-estimate.png)
+
+### 5. The team spins up
+On approval, the PM and Tech Lead come online. The Tech Lead sets the coding
+standards the Coder agents will follow.
+
+![Agents online](docs/screenshots/05-agents-online.png)
+
+### 6. Repo and issues created
+The PM creates the project repository and breaks the spec into GitHub issues —
+one per deliverable. Coder agents then pick up the issues and open pull requests.
+
+![Repo and issues](docs/screenshots/06-repo-and-issues.png)
+
+---
+
+## What runs on your machine
+
+> **Important:** Coder and Tech Lead agents execute model-generated shell commands **directly on your host** inside a temporary directory. There is no container isolation. Do not run this system against untrusted issue content or on a machine where arbitrary code execution is unacceptable. Real sandbox isolation is planned for v1.8.
+
+---
+
 ## Prerequisites
 
 - [Node.js](https://nodejs.org) v18+
@@ -192,25 +242,27 @@ agent-dev-team/
 │   ├── config.js           ← env loading (loadEnv)
 │   ├── discord/            ← Discord client utilities
 │   └── pipeline/           ← orchestration and pollers
-├── tests/                  ← Jest test suite (155 tests, ~0.3s)
+├── tests/                  ← Jest test suite (~0.3s, all external services mocked)
 ├── projects/
 │   └── estimation-history.json
 ├── index.js                ← entry point
 ├── .env.example
 ├── ARCHITECTURE.md         ← full system design — read before touching code
-├── ROADMAP.md              ← planned milestones through v1.5 and beyond
+├── ROADMAP.md              ← v1.x milestone plan and v2.x direction
 ├── CONTRIBUTING.md
 └── LICENSE
 ```
 
 ---
 
-## Known limitations (v1.2)
+## Known limitations (v1.5)
 
-- **Single-shot Coder** — workers generate code in one model call with no tool use or iteration. Output quality depends heavily on model quality and Issue detail. Agentic Coder with real tool use is planned for v1.3.
-- **No code execution** — Tech Lead reviews diff text, not running code. Tests don't run before merge. Real verification planned for v1.3.
-- **Hardcoded spec template** — Director always produces a Node/Express spec regardless of brief. Tech-stack-aware spec generation is planned for v1.4.
-- **Single project at a time** — PM and Tech Lead tokens are global. Two concurrent projects would share bot identity. True multi-project support is planned for v1.5.
+- **Workers execute on the host** — Coder and Tech Lead run model-generated shell commands directly on your machine in a tempdir. There is no container isolation. Real sandboxing is tracked for v1.8.
+- **No test runners for non-Node projects** — Tech Lead runs `npm test` if a `package.json` exists; for any other stack it returns `passed: null` and auto-merges. Tracked for v1.10.
+- **Estimation cold-start** — The historical mean requires 3+ past projects of the same `projectType`. New deployments always start with an LLM estimate; confidence improves as history grows.
+- **Shared bot sessions** — PM and Tech Lead Discord sessions are global (`PM_TOKEN`/`TECHLEAD_TOKEN`). Concurrent projects share the same session; approval disambiguation uses the `approve: {project-name}` syntax. True session isolation requires separate tokens per project.
+- **5-min polling fallback** — Webhooks are the primary trigger. Pollers run every 5 minutes as a safety net for dropped webhooks. Projects without `WEBHOOK_URL`/`GITHUB_WEBHOOK_SECRET` configured still rely on the poller.
+- **Actuals not tracked** — On project close, `actuals` is written as a copy of the estimate (variance = 0). Tracked for v1.7.
 - **Tech Lead self-approval** — when `TECHLEAD_GITHUB_TOKEN` is not set, Tech Lead posts a comment instead of a formal review (GitHub prevents self-approval). Set the optional separate token to enable formal `APPROVE`/`REQUEST_CHANGES` reviews.
 
 ---
@@ -221,7 +273,7 @@ See [ARCHITECTURE.md](./ARCHITECTURE.md) for the full system design.
 
 ## Roadmap
 
-See [ROADMAP.md](./ROADMAP.md) for planned milestones through v1.5 and the v2.x direction.
+See [ROADMAP.md](./ROADMAP.md) for the v1.x milestone plan and v2.x direction.
 
 ---
 
