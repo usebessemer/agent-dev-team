@@ -67,7 +67,8 @@ Use tools to explore the repo, write files, install dependencies, and run tests.
 
 Rules:
 - Always read existing files before overwriting them
-- Run tests after writing code (if a test script exists)
+- Write automated tests for the code you produce, in the same task and PR
+- Run the tests after writing them; do not call done() until tests exist and pass
 - Only call done() when the task is fully implemented and verified`;
 
 class CoderAgent {
@@ -82,7 +83,7 @@ class CoderAgent {
     this.anthropicKey = process.env.ANTHROPIC_API_KEY;
     this.agentName = `Coder-task-${issue.number}`;
     this.branchName = `coder/${issue.number}/${this.slugify(issue.title)}`;
-    this.maxIterations = parseInt(process.env.CODER_MAX_ITERATIONS) || 10;
+    this.maxIterations = parseInt(process.env.CODER_MAX_ITERATIONS) || 25;
     this.webhook = null;
   }
 

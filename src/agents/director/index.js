@@ -327,6 +327,9 @@ class Director {
       `- brief: { problemStatement, desiredOutcome, constraints: { technical: [strings] }, antiGoals: [strings] }\n` +
       `- architecture: { overview, components: [{ name, description }], techStack: { language, runtime, packages: [strings] } }\n` +
       `- deliverables: [{ name, type: "code" or "docs", description, acceptanceCriteria: [strings, at least 1] }]\n\n` +
+      `IMPORTANT deliverables rules:\n` +
+      `- Do NOT create a standalone testing, "Test Suite", or QA deliverable. Tests are not a separate deliverable.\n` +
+      `- Every deliverable of type "code" must include its own automated tests, expressed as acceptanceCriteria entries (e.g. "unit tests cover X", "test suite passes").\n\n` +
       `Supported stacks: JavaScript/node (express, jest, etc.), Python/python3 (flask, pytest, pandas, etc.), Go/go (standard library).\n` +
       `Match the tech stack to the brief — a Python brief gets Python, a Go brief gets Go.\n\n` +
       `Respond with ONLY valid JSON (no markdown, no backticks, no explanation).`
@@ -359,6 +362,9 @@ class Director {
       if (!d.name) errors.push('each deliverable must have a name');
       if (!Array.isArray(d.acceptanceCriteria) || d.acceptanceCriteria.length === 0) {
         errors.push(`deliverable "${d.name || '(unnamed)'}" must have at least one acceptanceCriteria`);
+      }
+      if (/test|qa/i.test(d.name || '')) {
+        errors.push(`deliverable "${d.name}" looks like a standalone test/QA deliverable — fold tests into the code deliverable's acceptanceCriteria instead`);
       }
     }
 

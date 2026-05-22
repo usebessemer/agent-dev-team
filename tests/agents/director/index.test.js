@@ -481,6 +481,45 @@ describe('Director._validateSpec', () => {
       expect(director._validateSpec(spec)).toEqual([]);
     }
   });
+
+  test('returns error when a deliverable name looks like a standalone test/QA deliverable', () => {
+    for (const badName of ['test-suite', 'Test Suite', 'qa-tests', 'automated-qa']) {
+      const spec = {
+        ...VALID_SPEC,
+        deliverables: [{ name: badName, type: 'code', description: 'Tests', acceptanceCriteria: ['passes'] }]
+      };
+      const errors = director._validateSpec(spec);
+      expect(errors).toContainEqual(expect.stringContaining('standalone test'));
+    }
+  });
+
+  test('does not flag a code deliverable whose name incidentally contains unrelated text', () => {
+    const spec = {
+      ...VALID_SPEC,
+      deliverables: [{ name: 'web-calculator-app', type: 'code', description: 'App', acceptanceCriteria: ['loads'] }]
+    };
+    expect(director._validateSpec(spec)).toEqual([]);
+  });
+});
+
+describe('Director._buildSpecPrompt', () => {
+  let director;
+
+  beforeEach(() => {
+    director = new Director();
+  });
+
+  test('instructs the model not to create a standalone test/QA deliverable', () => {
+    const prompt = director._buildSpecPrompt('Build a calculator');
+    expect(prompt).toContain('Do NOT create a standalone testing');
+    expect(prompt).toContain('Test Suite');
+  });
+
+  test('instructs the model that code deliverables must include tests in acceptanceCriteria', () => {
+    const prompt = director._buildSpecPrompt('Build a calculator');
+    expect(prompt).toContain('acceptanceCriteria');
+    expect(prompt).toContain('automated tests');
+  });
 });
 
 describe('Director with Claude API', () => {
