@@ -12,7 +12,8 @@ class TechLeadAgent {
     this.owner = process.env.GITHUB_OWNER;
     this.repo = process.env.GITHUB_REPO;
     this.ollamaUrl = process.env.OLLAMA_BASE_URL || 'http://127.0.0.1:11434';
-    this.model = process.env.MANAGER_MODEL || 'llama3.1:8b';
+    this.anthropicKey = process.env.ANTHROPIC_API_KEY;
+    this.model = process.env.MANAGER_MODEL || (this.anthropicKey ? 'claude-sonnet-4-6' : 'llama3.1:8b');
 
     this.ready = new Promise((resolve) => {
       this.client.once('clientReady', () => {
@@ -198,14 +199,32 @@ Provide brief advisory commentary on: naming clarity, error handling, code organ
 Return ONLY valid JSON with no other text:
 {"commentary":"your observations here","suggestions":["suggestion 1","suggestion 2"]}`;
 
-    const response = await fetch(`${this.ollamaUrl}/api/generate`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: this.model, prompt, stream: false, options: { temperature: 0.1 } }),
-    });
-
-    const data = await response.json();
-    const text = data.response.trim();
+    let text;
+    if (this.anthropicKey) {
+      const response = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': this.anthropicKey,
+          'anthropic-version': '2023-06-01',
+        },
+        body: JSON.stringify({
+          model: this.model,
+          max_tokens: 1024,
+          messages: [{ role: 'user', content: prompt }],
+        }),
+      });
+      const data = await response.json();
+      text = data.content[0].text.trim();
+    } else {
+      const response = await fetch(`${this.ollamaUrl}/api/generate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: this.model, prompt, stream: false, options: { temperature: 0.1 } }),
+      });
+      const data = await response.json();
+      text = data.response.trim();
+    }
 
     try {
       const jsonMatch = text.match(/\{[\s\S]*\}/);
