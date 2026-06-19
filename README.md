@@ -1,5 +1,7 @@
 # agent-dev-team
 
+> **Reference application within the [Bessemer](https://github.com/usebessemer) stack.** A live dogfood of the agent-role topology in practice, and the project that started this work. Kept as a maturity exemplar, not the current focus; the active stack is research → tooling ([icm-kit](https://github.com/usebessemer/icm-kit)) → [agent-classes](https://github.com/usebessemer/agent-classes).
+
 [![Tests](https://github.com/usebessemer/agent-dev-team/actions/workflows/test.yml/badge.svg)](https://github.com/usebessemer/agent-dev-team/actions/workflows/test.yml)
 
 A tiered AI agent system that builds software projects autonomously. Define a project brief in Discord, and the team plans, builds, reviews, and ships it — with human approval gates at every major decision point.
